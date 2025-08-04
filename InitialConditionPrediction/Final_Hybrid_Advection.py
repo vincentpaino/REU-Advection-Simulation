@@ -8,16 +8,36 @@ print(f"Python version: {sys.version}")
 print(f"PyTorch version: {torch.__version__}")
 print("\n")
 
-
-# import time # track how long it takes for network to train
 """
-This model takes the known u at the last time step T of the 1D linear advection equation
-and predicts the initial condition g(x) at t=0 using a neural network.
-The loss function includes the difference between the true value of u at the last time step (u[-1]) 
-and the u obtained from running FDM with the g_pred(x) (IC that network has predicted).
+Physics-Informed Neural Network (PINN) Hybrid for 1D Linear Advection Inverse Problem
 
-This is an inverse problem where g(x) (the initial condition) is unknown, the PINN should be trained to discover g(x) 
-by minimizing a loss J, which compares the predicted solution at the final time to the observed data u_d(x, T).
+This code solves an inverse problem for the 1D linear advection equation:
+    ∂u/∂t + a * ∂u/∂x = 0
+
+PROBLEM SETUP:
+- Given: Final state u(x,T) at time T (experimental/measured data)
+- Find: Initial condition g(x) = u(x,0) that produced this final state
+- Method: Hybrid PINN approach combining neural networks with discrete adjoint method
+
+DATA STRUCTURE:
+- uref: "Experimental/measured" data (a=1.0, Gaussian at x=-0.4, amplitude=0.5)
+  * uref[:, -1] = Known final state (input to inverse problem)
+  * uref[:, 0] = Unknown initial condition (target to reconstruct)
+- um: "Simulated" baseline data (a=0.9, Gaussian at x=-0.5, amplitude=1.0)
+  * Used for comparison/visualization only, not part of inverse problem
+
+INVERSE PROBLEM CORE:
+The neural network learns the mapping: final_state → initial_condition
+- Input: a random observed tensor (what we observe at time T)
+- Output: predicted initial condition g(x)
+- Target: uref[:, 0] (true initial condition, unknown in practice)
+
+METHODOLOGY:
+1. Generate synthetic "experimental" data (uref) by solving advection equation forward
+2. Train neural network to predict initial condition g(x) from final state
+3. Use FDM to propagate predicted g(x) forward to time T
+4. Minimize loss between predicted final state and observed uref[:, -1]
+5. Employ discrete adjoint method for efficient gradient computation
 """
 # Constants
 a_um = 0.9         # Advection speed for "simulated data"
@@ -30,6 +50,7 @@ x_start = -1.0     # Leftmost bound
 x_end = 1.0        # Rightmost bound
 hybrid_loss_history = []  # To store loss values for plotting
 adjoint_loss_history = [] # To store adjoint loss values for plotting (future work)
+norm_loss_history = []
 
 # Set same seeds for reproducibility
 torch.manual_seed(40) 
@@ -48,9 +69,18 @@ def um_g(x):
     amplitude = 1.0
     return amplitude * torch.exp(-50 * (x + 0.5)**2) # Defines and sets the initial condition g(x) with a gaussian/normal distribution "bump" to see how the wave propagates
 
+# Three different g(x) distributions for prediction outcomes
 def uref_g(x):
+    amplitude = 1.0
+    return amplitude * torch.exp(-50 * (x + 0.4)**2)
+
+def uref_g2(x):
     amplitude = 0.5
     return amplitude * torch.exp(-50 * (x + 0.4)**2)
+
+def uref_g3(x):
+    amplitude = 0.5
+    return amplitude * torch.exp(-50 * (x + 0.5)**2)
 
 um = torch.zeros((nx, nt), dtype=torch.float64)        # Initializing the solution tensor u with zeros 
 um[:, 0] = um_g(x)                   # Initial condition at t = 0
@@ -58,7 +88,7 @@ um[0,0] = c                       # Set initial condition equal to c at x=0 , t=
 #print(initial_conditions)         # Printing the distribution
 
 uref = torch.zeros((nx, nt), dtype=torch.float64)
-uref[:, 0] = uref_g(x)                   
+uref[:, 0] = uref_g3(x)                   
 uref[0,0] = c                      
 initial_conditions = uref[:,0]  # Store the initial condition for loss function
 
@@ -77,11 +107,11 @@ print("Last timestep at uref printed:", uref_np)
 
 #"""
 # Plot initial and final states of um & uref (first/last time step)
-plt.plot(x, um_np[:,0], label="Initial $g(x)$ of $um(x,t)$")
+plt.plot(x, um_np[:,0], label="Initial $g(x)$ of $um(x,t)$", linestyle='--')
 plt.plot(x, um_np[:,-1], label="Final $um(x,T)$")
-plt.plot(x, uref_np[:,0], label="Initial $g(x)$ of $uref(x,t)$")
+plt.plot(x, uref_np[:,0], label="Initial $g(x)$ of $uref(x,t)$", linestyle='--')
 plt.plot(x, uref_np[:,-1], label="Final $uref(x,T)$")
-plt.title("1D Linear Advection Problem")
+plt.title("1D Linear Advection Simulation ")
 plt.xlabel("x")
 plt.ylabel("u")
 plt.legend()
@@ -175,7 +205,8 @@ def adjoint_gradient_descent(um, uref, um_g, uref_g): # reminder: "g" is our ini
             for j in range(nx):
                 loss += (phiNSGDi[j] - uref_g[j]) ** 2
             print(f" Loss at loop {epoch}/{epochs} {loss}")
-     
+    
+    """
     # Create x-axis values from 1 to 100
     x = list(range(1,101))
 
@@ -194,38 +225,61 @@ def adjoint_gradient_descent(um, uref, um_g, uref_g): # reminder: "g" is our ini
 
     # Display the plot
     plt.show()   
-
+    """
     
 
 class InitialConditionPrediction(nn.Module):
     """
-    Defining a PINN that knows the wave equation that predicts 'g' (the initial condition when t=0)
+    Defining a PINN that knows the advection equation that predicts 'g' (the initial condition when t=0)
     The input, in theory, should be any shape of tensor (German paper used torch.randn((1, 128, 8, 4))
-    We know what the wave equation looks like at the last time-step T, and we need to work backwards to find the initial condition g.
-    (For help look at Duffy paper)
+    We know what the equation looks like at the last time-step T, and we need to work backwards to find the initial condition g.
+    (For help look at ICproblem.ipynb)
     """
     def __init__(self, input_dim, hidden_dim, output_dim):
         super().__init__()
         self.model = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.SiLU(),      # Use Tanh, GELU (good w/ lr=2e-3), SiLU
+            nn.Linear(input_dim, hidden_dim), # Input layer
+            nn.Mish(),      # Use, GELU (good w/ lr=2e-3), SiLU, Pure Mish too
             nn.Linear(hidden_dim, hidden_dim),
-            nn.SiLU(),
+            nn.Mish(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.SiLU(),
+            nn.Mish(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.SiLU(),
+            nn.Mish(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.SiLU(),
+            nn.Mish(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.SiLU(),
+            nn.Mish(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.SiLU(),
+            nn.Mish(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.SiLU(),
+            nn.Mish(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, output_dim),  # Output layer to predict initial condition g
+            nn.Mish(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Mish(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Mish(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Mish(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Mish(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Mish(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Mish(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Mish(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Mish(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Mish(),
+            #nn.Linear(hidden_dim, hidden_dim),
+            #nn.Mish(),
+            #nn.Linear(hidden_dim, hidden_dim),
+            #nn.Mish(),
+            nn.Linear(hidden_dim, output_dim), # Output layer
+            nn.Mish()
         )
         #Xavier/He initialization
         self._initialize_weights()
@@ -239,34 +293,56 @@ class InitialConditionPrediction(nn.Module):
     def forward(self, x):
         return self.model(x)
     
-
 def loss_function(predicted_uref, ground_truth_uref): # taking u at the very last time step T of our "real, experimental data" to use FDM to compute g(x)
     """ Run FDM on the outputs (predicted initial condition g) and compare it to the ground truth u at the last time step T"""
-    J = dx * torch.sum((predicted_uref - ground_truth_uref) ** 2)
+    J = dx * torch.sum((predicted_uref - ground_truth_uref) ** 2) 
     return J
 
+def loss_function_2(predicted_uref_g, ground_truth_uref): #norm loss to compare to adjoint
+    J = torch.norm(predicted_uref_g - ground_truth_uref)
+    return J
+    
 def train_model(model, inputs, ground_truth_uref, epochs, lr):
     model.train()
     optim = torch.optim.Adam(model.parameters(), lr=lr) 
+    # lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optim, gamma=0.99) # Decay learning rate by 5% every epoch
+    # 2nd scheduler: Reduce on Plateau (only reduce when truly stuck)
+    lr_scheduler2 = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optim, mode='min', factor=0.5, patience=10, min_lr=2.5e-7
+    )
     
-    for epoch in range(epochs):
+    for epoch in range(epochs + 1):
         outputs = model(inputs)
         predicted_uref = fdm(outputs)  
-        loss = loss_function(predicted_uref, ground_truth_uref) 
-        hybrid_loss_history.append(loss.item())
+        #loss = loss_function(predicted_uref, ground_truth_uref) 
+        #hybrid_loss_history.append(loss.item())
+        
+        loss2 = loss_function_2(predicted_uref, ground_truth_uref) 
+        norm_loss_history.append(loss2.item())
+        
         adjoint_gradients = adjoint_method(um=predicted_uref, uref=ground_truth_uref)
         optim.zero_grad()
-        outputs.backward(gradient=adjoint_gradients)
+        outputs.backward(gradient=adjoint_gradients) # These gradients are very small at e-7 to e-16 values
+        
+        #if epoch % 100 == 0:
+            #for name, param in model.named_parameters():
+                #if param.grad is None:
+                    #print(f"[WARNING] No grad for: {name}")
+                #else:
+                    #print(f"[OK] Grad for {name}: mean={param.grad.mean():.3e}")
+        
+        #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0) # Gradient clipping to prevent exploding gradients
         #loss.backward()
-        optim.step()        
-        if epoch % 25 == 0:
-            #print(f'Epoch {epoch}/{epochs}, Loss: {loss.item()}')
-            print(f"Epoch {epoch}/{epochs}")
+        optim.step()
+        if epoch % 50 == 0:
+            current_lr = optim.param_groups[0]['lr']
+            print(f"Epoch {epoch}/{epochs}, Loss: {loss2.item():.6f}, LR: {current_lr:.6e}")
+        lr_scheduler2.step(loss2)  # Update learning rate after each epoch
             
 def smoothen_data(outputs):
     """
     Smoothens the data using a simple moving average filter.
-    This is useful for reducing noise in the predictions.
+    This is useful for reducing noise in the predictions, used for our poster.
     """
     window_size = 5
     smoothed_outputs = torch.zeros_like(outputs)
@@ -279,16 +355,16 @@ def smoothen_data(outputs):
     
 def eval_model(model, x, pred_g_dist, true_g_dist):
     model.eval()
-    fig = plt.figure(figsize=(10, 5))
-    plt.title("Hybrid Prediction for Initial Conditions")
-    plt.plot(x, pred_g_dist, color="red", linestyle="-", label="Predicted $g(x)$")
-    plt.plot(x, true_g_dist, color="green", linestyle="-", label="True $g(x)$")
-    plt.xlabel("x")
-    plt.xlim(-1,1)
-    #plt.ylim(-6,1)
-    plt.ylabel("$u$")
-    plt.figtext(0.5, 0.01, f"epochs: {num_epochs}, lr: {lr}", wrap=True, horizontalalignment='center', fontsize=10)
-    plt.legend()
+    plt.figure(figsize=(10, 5))
+    #plt.title("PINN Prediction of Initial Conditions")
+    plt.plot(x, pred_g_dist, color="red", linestyle="-", label="Predicted $g(x)$", linewidth=5)
+    plt.plot(x, true_g_dist, color="blue", linestyle="-", label="True $g(x)$",linewidth=5)
+    plt.xlabel("Grid Points", fontsize=35)
+    plt.ylabel("IC Values", fontsize=35)
+    #plt.figtext(0.5, 0.01, f"epochs: {num_epochs}, lr: {lr}", wrap=True, horizontalalignment='center', fontsize=10)
+    plt.legend(fontsize=25)
+    plt.grid(True)
+    plt.tick_params(labelsize=25)
     plt.show()
     
 def show_loss(epochs, hybrid_loss_history):
@@ -296,17 +372,18 @@ def show_loss(epochs, hybrid_loss_history):
     plt.title("Hybrid PINN Loss")
     ax.set_xlabel("Epochs")
     ax.set_ylabel("Loss")
+    ax.set_yscale('log')
     x = np.linspace(0, epochs, len(hybrid_loss_history))
     y = hybrid_loss_history[:]
     ax.plot(x, y)
-    plt.figtext(0.1, 0.01, f"Epochs: {epochs}", wrap=True, horizontalalignment='left', fontsize=10)
-    plt.figtext(0.1, 0.05, f"Learning Rate: {lr}", wrap=True, horizontalalignment='left', fontsize=10)
+    #plt.figtext(0.1, 0.01, f"Epochs: {epochs}", wrap=True, horizontalalignment='left', fontsize=10)
+    #plt.figtext(0.1, 0.05, f"Learning Rate: {lr}", wrap=True, horizontalalignment='left', fontsize=10)
     plt.show()
 
 
 # --- Init PINN and Train --- #
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model = InitialConditionPrediction(input_dim=nx, hidden_dim=250, output_dim=nx)
+model = InitialConditionPrediction(input_dim=nx, hidden_dim=180, output_dim=nx) #hidden_dim anywhere 150-190
 ground_truth_uref = uref[:,-1]                          # Use the final state of u at time step T as input to the model, which is already calculated 
 ground_truth_um = um[:,-1]
 
@@ -314,10 +391,12 @@ ground_truth_um = um[:,-1]
 #print("ground truth um: ", ground_truth_um)
 
 modelInput = torch.randn((100), device=device)     # Input tensor of random values of spatial grid size
+#modelInput = torch.tensor(uref[:,-1]).float()  # This is what we observe, the final state of u at time step T
 print("Model Input:",modelInput)
 
-lr = 2.5e-3 
+lr = 2.5e-3
 num_epochs = 1000
+
 train_model(model, modelInput, ground_truth_uref, num_epochs, lr)  # Train the model with the final state of u and the true initial condition g
 
 g_pred = model(modelInput)  # Predict the initial condition g(x) using the trained model
@@ -329,13 +408,19 @@ g_pred = g_pred.detach().numpy()  # Convert the output to numpy for evaluation
 initial_conditions = initial_conditions.detach().numpy()  # Convert the initial conditions to numpy for evaluation
 
 eval_model(model, x=x, pred_g_dist=g_pred, true_g_dist=initial_conditions)  # Evaluate the model with the predicted initial u and the true initial condition g
-#eval_model(model, x=x, pred_g_dist=smoothen_data(g_pred_tensor), true_g_dist=initial_conditions) # Evaluate model with a smoothened output 
-show_loss(num_epochs, hybrid_loss_history)  # Show the loss curve
+eval_model(model, x=x, pred_g_dist=smoothen_data(g_pred_tensor), true_g_dist=initial_conditions) # Evaluate model with a smoothened output 
+#show_loss(num_epochs, hybrid_loss_history)  # Show the loss curve
+show_loss(num_epochs, norm_loss_history)
 
 # --- Plot Adjoint Method ---
 dJdphi = adjoint_method(um=ground_truth_um, uref=ground_truth_uref)
 print(f"Printed dJdphi from adjoint method: {dJdphi}")
 print(f"Shape of dJdphi: ", {dJdphi.shape})
+
+print(f"initial conditions of uref: {initial_conditions}")
+print("\n")
+print(f"predicted initial conditions of uref: {g_pred}")
+
 
 
 # Plot
@@ -349,4 +434,4 @@ print(f"Shape of dJdphi: ", {dJdphi.shape})
 #torch.set_printoptions(profile="default")
 
 # --- Pure Adjoint Optimization Loop --- #
-adjoint_gradient_descent(um=ground_truth_um, uref=ground_truth_uref, um_g=um[:,0], uref_g=uref[:,0])
+#adjoint_gradient_descent(um=ground_truth_um, uref=ground_truth_uref, um_g=um[:,0], uref_g=uref[:,0])
