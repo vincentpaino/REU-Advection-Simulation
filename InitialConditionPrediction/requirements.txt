@@ -1,0 +1,6 @@
+# Use these versions to run the simulations
+# These versions are compatible with Python 3.9.23
+
+torch==1.12.1
+matplotlib==3.5.3
+numpy==1.21.6
