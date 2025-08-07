@@ -6,7 +6,7 @@ import numpy as np
 import time # track how long it takes for network to train
 """
 This model takes the known u at the last time step T of the 1D linear advection equation
-and predicts the initial condition g(x) at t=0 using a neural network.
+and predicts the initial condition g(x) at t=0 using NSGD with the discrete adjoint method.
 The loss function includes the difference between the true value of u at the last time step (u[-1]) 
 and the u obtained from running FDM with the g_pred(x) (IC that network has predicted).
 

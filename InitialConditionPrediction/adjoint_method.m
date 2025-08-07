@@ -113,3 +113,5 @@ for i=(numberOfTimeSteps-1):-1:1
 lambdai=transpose((-A1)*transpose(lambdam))/A2 
 lamdam=lambdai 
 end 
+
+% This implementation was made by Rose Bittle

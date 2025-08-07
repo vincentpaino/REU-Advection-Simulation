@@ -9,15 +9,15 @@ print(f"PyTorch version: {torch.__version__}")
 print("\n")
 
 """
-Physics-Informed Neural Network (PINN) Hybrid for 1D Linear Advection Inverse Problem
+Physics-Informed Neural Network (PINN) and Adjoint Hybrid for 1D Linear Advection Inverse Problem
 
-This code solves an inverse problem for the 1D linear advection equation:
+This code solves the inverse problem and predicts the initial conditions for the 1D linear advection equation:
     ∂u/∂t + a * ∂u/∂x = 0
 
 PROBLEM SETUP:
 - Given: Final state u(x,T) at time T (experimental/measured data)
 - Find: Initial condition g(x) = u(x,0) that produced this final state
-- Method: Hybrid PINN approach combining neural networks with discrete adjoint method
+- Method: Hybrid approach combining neural networks with discrete adjoint method for efficient gradient computation.
 
 DATA STRUCTURE:
 - uref: "Experimental/measured" data (a=1.0, Gaussian at x=-0.4, amplitude=0.5)
@@ -26,13 +26,13 @@ DATA STRUCTURE:
 - um: "Simulated" baseline data (a=0.9, Gaussian at x=-0.5, amplitude=1.0)
   * Used for comparison/visualization only, not part of inverse problem
 
-INVERSE PROBLEM CORE:
+Inverse problem:
 The neural network learns the mapping: final_state → initial_condition
 - Input: a random observed tensor (what we observe at time T)
 - Output: predicted initial condition g(x)
 - Target: uref[:, 0] (true initial condition, unknown in practice)
 
-METHODOLOGY:
+Methodology:
 1. Generate synthetic "experimental" data (uref) by solving advection equation forward
 2. Train neural network to predict initial condition g(x) from final state
 3. Use FDM to propagate predicted g(x) forward to time T
@@ -433,5 +433,5 @@ print(f"predicted initial conditions of uref: {g_pred}")
 #torch.set_printoptions(profile="full")
 #torch.set_printoptions(profile="default")
 
-# --- Pure Adjoint Optimization Loop --- #
+# --- Pure Adjoint Optimization Loop (no NN) --- #
 #adjoint_gradient_descent(um=ground_truth_um, uref=ground_truth_uref, um_g=um[:,0], uref_g=uref[:,0])
